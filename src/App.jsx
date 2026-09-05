@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadCloud, DownloadCloud, Server, HardDrive, Smartphone, File, Folder as FolderIcon, X, CheckCircle, Clock, ChevronRight, Download, Zap, Search, Home, ArrowLeft } from 'lucide-react';
+import { UploadCloud, DownloadCloud, Server, HardDrive, Smartphone, File, Folder as FolderIcon, X, CheckCircle, Zap, ArrowLeft } from 'lucide-react';
 import { Peer } from 'peerjs';
 
-// --- Komponen Tombol 3D ---
 const Button3D = ({ children, onClick, color = 'blue', className = '', disabled = false }) => {
   const colorVariants = {
     blue: 'bg-blue-500 hover:bg-blue-400 border-blue-700 text-white shadow-blue-500/50',
@@ -38,6 +37,7 @@ export default function App() {
   // PeerJS Core
   const [peer, setPeer] = useState(null);
   const [myId, setMyId] = useState('');
+  const [conn, setConn] = useState(null);
 
   // === STATE HOST ===
   const [hostedFiles, setHostedFiles] = useState([]);
@@ -46,12 +46,10 @@ export default function App() {
 
   // === STATE REMOTE (CLIENT) ===
   const [remoteId, setRemoteId] = useState('');
-  const [conn, setConn] = useState(null);
   const [remoteFiles, setRemoteFiles] = useState([]);
   const [remoteStatus, setRemoteStatus] = useState('disconnected');
-  const [searchQuery, setSearchQuery] = useState('');
 
-  // === STATE DIRECT TRANSFER (KIRIM/TERIMA) ===
+  // === STATE DIRECT TRANSFER ===
   const [sendStatus, setSendStatus] = useState('idle'); 
   const [sentFilesCount, setSentFilesCount] = useState(0);
   const [receiveStatus, setReceiveStatus] = useState('idle');
@@ -63,81 +61,80 @@ export default function App() {
     setTimeout(() => setToast(''), 3000);
   };
 
-  // Bersihkan Peer saat ganti layar
   useEffect(() => {
     return () => {
       if (peer) peer.destroy();
     };
   }, [peer]);
 
-  // ==========================================
-  // LOGIKA HOST (SERVER LOKAL)
-  // ==========================================
-  const startHosting = () => setCurrentScreen('host');
-
-  const handleFolderSelect = (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
-
-    const newPeer = new Peer(Math.random().toString(36).substring(2, 8).toUpperCase());
-    
-    newPeer.on('open', (id) => {
-      setMyId(id);
-      setHostStatus('ready');
-      setPeer(newPeer);
-    });
-
-    newPeer.on('connection', (connection) => {
-      showToast('Koneksi Client Masuk!');
-      
-      connection.on('open', () => {
-        // Kirim list file tanpa file aslinya
-        const fileStructure = files.map(f => ({
-            name: f.name,
-            path: f.webkitRelativePath,
-            size: f.size,
-            type: f.type
-        }));
-        connection.send({ type: 'FILE_LIST', data: fileStructure });
-      });
-
-      connection.on('data', (data) => {
-         if(data.type === 'REQUEST_FILE') {
-             // Klien minta download file, proses baca file lalu kirim
-             const requestedFile = files.find(f => f.webkitRelativePath === data.path);
-             if(requestedFile) {
-                 const reader = new FileReader();
-                 // Baca sebagai ArrayBuffer untuk kecepatan & ukuran file besar
-                 reader.onload = (e) => {
-                     connection.send({ 
-                         type: 'FILE_DATA', 
-                         fileName: requestedFile.name, 
-                         fileData: e.target.result,
-                         fileType: requestedFile.type
-                     });
-                 };
-                 reader.readAsArrayBuffer(requestedFile);
-             }
-         }
-      });
-    });
-    setHostedFiles(files);
+  const startHosting = () => {
+    setCurrentScreen('host');
+    setHostStatus('idle');
   };
 
-  // ==========================================
-  // LOGIKA REMOTE (CLIENT)
-  // ==========================================
+  const handleFolderSelect = (e) => {
+    try {
+      const files = Array.from(e.target.files);
+      if (files.length === 0) return;
+
+      if (peer) peer.destroy();
+
+      const newPeer = new Peer(Math.random().toString(36).substring(2, 8).toUpperCase());
+      
+      newPeer.on('open', (id) => {
+        setMyId(id);
+        setHostStatus('ready');
+        setPeer(newPeer);
+      });
+
+      newPeer.on('connection', (connection) => {
+        showToast('Koneksi Client Masuk!');
+        
+        connection.on('open', () => {
+          const fileStructure = files.map(f => ({
+              name: f.name,
+              path: f.webkitRelativePath,
+              size: f.size,
+              type: f.type
+          }));
+          connection.send({ type: 'FILE_LIST', data: fileStructure });
+        });
+
+        connection.on('data', (data) => {
+           if(data.type === 'REQUEST_FILE') {
+               const requestedFile = files.find(f => f.webkitRelativePath === data.path);
+               if(requestedFile) {
+                   const reader = new FileReader();
+                   reader.onload = (e) => {
+                       connection.send({ 
+                           type: 'FILE_DATA', 
+                           fileName: requestedFile.name, 
+                           fileData: e.target.result,
+                           fileType: requestedFile.type
+                       });
+                   };
+                   reader.readAsArrayBuffer(requestedFile);
+               }
+           }
+        });
+      });
+      setHostedFiles(files);
+    } catch (error) {
+      showToast("Browser tidak mendukung atau folder diblokir.");
+      console.error(error);
+      setHostStatus('idle');
+    }
+  };
+
   const startRemoteAccess = () => setCurrentScreen('remote');
 
   const connectToHost = () => {
     if (!remoteId.trim()) return showToast("Masukkan ID Host!");
-    
     setRemoteStatus('connecting');
     const newPeer = new Peer();
     
     newPeer.on('open', () => {
       const connection = newPeer.connect(remoteId.toUpperCase());
-      
       connection.on('open', () => {
         setConn(connection);
         setRemoteStatus('connected');
@@ -148,11 +145,10 @@ export default function App() {
         if (data.type === 'FILE_LIST') {
           setRemoteFiles(data.data);
         } else if (data.type === 'FILE_DATA') {
-          // Terima ArrayBuffer, ubah jadi file untuk didownload
           const blob = new Blob([data.fileData], { type: data.fileType });
           const url = URL.createObjectURL(blob);
           triggerDownload(url, data.fileName);
-          setTimeout(() => URL.revokeObjectURL(url), 10000); // cleanup memory
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
         }
       });
 
@@ -170,6 +166,13 @@ export default function App() {
       }
   };
 
+  const disconnectRemote = () => {
+      if(conn) conn.close();
+      setRemoteStatus('disconnected');
+      setRemoteFiles([]);
+      setCurrentScreen('home');
+  };
+
   const triggerDownload = (url, filename) => {
       const a = document.createElement('a');
       a.href = url;
@@ -180,23 +183,6 @@ export default function App() {
       showToast(`Selesai diunduh: ${filename}`);
   };
 
-  const disconnectRemote = () => {
-      if(conn) conn.close();
-      setRemoteStatus('disconnected');
-      setRemoteFiles([]);
-      setCurrentScreen('home');
-  };
-
-  const formatBytes = (bytes) => {
-      if(bytes === 0) return '0 Bytes';
-      const k = 1024, dm = 2, sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-  };
-
-  // ==========================================
-  // LOGIKA DIRECT TRANSFER (KIRIM & TERIMA)
-  // ==========================================
   const startSending = () => {
     setCurrentScreen('send');
     setSendStatus('idle');
@@ -263,7 +249,7 @@ export default function App() {
           const blob = new Blob([data.fileData], { type: data.fileType });
           const url = URL.createObjectURL(blob);
           triggerDownload(url, data.fileName);
-          setTimeout(() => URL.revokeObjectURL(url), 10000); // Bersihkan memori otomatis
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
           setReceivedFiles(prev => [...prev, data.fileName]);
         }
       });
@@ -275,11 +261,6 @@ export default function App() {
     });
   };
 
-  // ==========================================
-  // RENDER UI
-  // ==========================================
-
-  // --- UI: HOME ---
   if (currentScreen === 'home') {
     return (
       <div className="bg-slate-900 text-slate-200 min-h-[100dvh] w-full flex justify-center items-center font-sans">
@@ -293,7 +274,7 @@ export default function App() {
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-6 pb-6 no-scrollbar">
-            {/* Kategori 1: Transfer Langsung */}
+            {/* Direct Transfer */}
             <div className="bg-slate-800/60 backdrop-blur-md p-5 rounded-[2rem] border border-slate-700/50 shadow-lg">
               <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                 <Zap className="w-4 h-4 text-blue-400" /> Transfer Langsung
@@ -316,7 +297,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Kategori 2: Cloud Pribadi */}
+            {/* Cloud Privasi */}
             <div className="bg-slate-800/60 backdrop-blur-md p-5 rounded-[2rem] border border-slate-700/50 shadow-lg">
               <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                 <Server className="w-4 h-4 text-amber-400" /> Cloud Pribadi
@@ -349,7 +330,6 @@ export default function App() {
     );
   }
 
-  // --- UI: KIRIM FILE (SENDER) ---
   if (currentScreen === 'send') {
     return (
       <div className="bg-slate-900 text-slate-200 min-h-[100dvh] w-full flex flex-col font-sans">
@@ -369,7 +349,7 @@ export default function App() {
             )}
             
             {sendStatus === 'ready' && (
-                <div className="max-w-xs w-full space-y-6 animate-fade-in-up">
+                <div className="max-w-xs w-full space-y-6">
                     <div className="w-20 h-20 bg-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-blue-500/50">
                         <UploadCloud className="w-10 h-10 text-blue-400" />
                     </div>
@@ -380,18 +360,18 @@ export default function App() {
                         <div className="text-5xl font-black text-blue-400 tracking-[0.2em] mb-4 bg-slate-900 py-4 rounded-xl border border-slate-800">
                             {myId}
                         </div>
-                        <p className="text-xs text-slate-500">Berikan PIN ini kepada orang yang akan menerima file.</p>
+                        <p className="text-xs text-slate-500">Berikan PIN ini kepada penerima.</p>
                     </div>
                 </div>
             )}
 
             {sendStatus === 'connected' && (
-                <div className="max-w-xs w-full space-y-6 animate-fade-in-up">
+                <div className="max-w-xs w-full space-y-6">
                     <div className="w-24 h-24 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/50">
                         <CheckCircle className="w-12 h-12 text-emerald-400" />
                     </div>
                     <h3 className="text-2xl font-bold text-emerald-400">Penerima Siap!</h3>
-                    <p className="text-sm text-slate-400">Pilih file yang ingin dikirimkan. File akan langsung meluncur ke perangkat penerima.</p>
+                    <p className="text-sm text-slate-400 mb-6">Pilih file yang ingin dikirimkan.</p>
                     
                     <input 
                         type="file" 
@@ -400,27 +380,25 @@ export default function App() {
                         className="hidden" 
                         onChange={handleDirectFileSelect}
                     />
-                    <Button3D color="blue" className="w-full !py-4" onClick={() => directFileInputRef.current.click()}>
+                    <Button3D color="emerald" className="w-full" onClick={() => directFileInputRef.current.click()}>
                         Pilih & Kirim File
                     </Button3D>
 
                     {sentFilesCount > 0 && (
-                        <div className="bg-slate-800 p-3 rounded-xl border border-slate-700 flex justify-between items-center text-sm">
-                            <span className="text-slate-400">Total terkirim:</span>
-                            <span className="font-bold text-white bg-blue-600 px-3 py-1 rounded-lg">{sentFilesCount} File</span>
+                        <div className="mt-4 text-emerald-400 text-sm font-bold">
+                            Berhasil mengirim {sentFilesCount} file.
                         </div>
                     )}
                 </div>
             )}
         </div>
         {toast && (
-          <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl z-50 text-sm">{toast}</div>
+          <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl z-50 text-sm font-medium border border-slate-700">{toast}</div>
         )}
       </div>
     );
   }
 
-  // --- UI: TERIMA FILE (RECEIVER) ---
   if (currentScreen === 'receive') {
     return (
       <div className="bg-slate-900 text-slate-200 min-h-[100dvh] w-full flex flex-col font-sans">
@@ -429,8 +407,7 @@ export default function App() {
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h2 className="font-bold text-purple-400 flex items-center gap-2"><DownloadCloud className="w-4 h-4"/> Terima File Langsung</h2>
-            <p className="text-xs text-slate-400">Menerima dari perangkat lain</p>
+            <h2 className="font-bold text-purple-400 flex items-center gap-2"><DownloadCloud className="w-4 h-4"/> Terima File</h2>
           </div>
         </header>
 
@@ -440,7 +417,7 @@ export default function App() {
                     <div className="w-16 h-16 bg-purple-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-purple-500/50">
                         <DownloadCloud className="w-8 h-8 text-purple-400" />
                     </div>
-                    <h3 className="text-xl font-bold text-center mb-6">Hubungkan ke Pengirim</h3>
+                    <h3 className="text-xl font-bold text-center mb-6">PIN Pengirim</h3>
                     <input
                         type="text"
                         maxLength={6}
@@ -463,7 +440,7 @@ export default function App() {
                             </span>
                         </span>
                         <h3 className="text-lg font-bold text-white mb-1">Menunggu Kiriman...</h3>
-                        <p className="text-xs text-slate-400">File yang dikirim akan otomatis diunduh.</p>
+                        <p className="text-xs text-slate-400">File akan otomatis diunduh.</p>
                     </div>
 
                     {receivedFiles.length > 0 && (
@@ -483,7 +460,155 @@ export default function App() {
             )}
         </div>
         {toast && (
-          <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl z-50 text-sm font-medium">{toast}</div>
+          <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl z-50 text-sm font-medium border border-slate-700">{toast}</div>
+        )}
+      </div>
+    );
+  }
+
+  if (currentScreen === 'host') {
+    return (
+      <div className="bg-slate-900 text-slate-200 min-h-[100dvh] w-full flex flex-col font-sans">
+        <header className="bg-slate-800 p-4 flex items-center gap-4 shadow-md border-b border-slate-700">
+          <button onClick={() => setCurrentScreen('home')} className="p-2 bg-slate-700 rounded-full hover:bg-slate-600 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+          <div>
+            <h2 className="font-bold text-amber-400 flex items-center gap-2"><Server className="w-4 h-4"/> Host Server Aktif</h2>
+            <p className="text-xs text-slate-400">Izinkan perangkat lain mengakses folder Anda</p>
+          </div>
+        </header>
+
+        <div className="flex-1 p-6 flex flex-col items-center justify-center text-center">
+            {hostStatus === 'idle' && (
+                <div className="max-w-xs space-y-6">
+                    <div className="w-24 h-24 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-amber-500/50">
+                        <FolderIcon className="w-12 h-12 text-amber-400" />
+                    </div>
+                    <h3 className="text-xl font-bold">Pilih Folder Publik</h3>
+                    <p className="text-sm text-slate-400">Pilih folder di perangkat ini yang isinya boleh diakses oleh Anda dari perangkat lain.</p>
+                    
+                    <input 
+                        type="file" 
+                        ref={fileInputRef}
+                        webkitdirectory="true" 
+                        className="hidden" 
+                        onChange={handleFolderSelect}
+                    />
+                    <Button3D color="amber" className="w-full" onClick={() => fileInputRef.current.click()}>
+                        Buka Akses Folder
+                    </Button3D>
+                </div>
+            )}
+
+            {hostStatus === 'ready' && (
+                <div className="max-w-xs w-full space-y-6">
+                    <div className="bg-slate-800 p-6 rounded-3xl border border-slate-700 shadow-xl relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-amber-500 animate-pulse"></div>
+                        <p className="text-sm text-slate-400 font-medium mb-2">PIN AKSES REMOTE</p>
+                        <div className="text-5xl font-black text-amber-400 tracking-[0.2em] mb-4 bg-slate-900 py-4 rounded-xl border border-slate-800">
+                            {myId}
+                        </div>
+                        <p className="text-xs text-slate-500">Masukkan PIN ini di perangkat lain untuk menjelajahi isi folder.</p>
+                    </div>
+
+                    <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/50 text-left">
+                        <div className="flex items-center gap-2 mb-2 text-emerald-400 text-sm font-bold">
+                            <span className="relative flex h-3 w-3">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                            </span>
+                            Menunggu Koneksi...
+                        </div>
+                        <p className="text-[11px] text-slate-400">
+                            <span className="font-bold text-white">{hostedFiles.length} file</span> di-index dan siap dilayani. Jangan tutup layar ini.
+                        </p>
+                    </div>
+                </div>
+            )}
+        </div>
+        {toast && (
+          <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl z-50 text-sm font-medium border border-slate-700">{toast}</div>
+        )}
+      </div>
+    );
+  }
+
+  if (currentScreen === 'remote') {
+    return (
+      <div className="bg-slate-900 text-slate-200 h-[100dvh] w-full flex flex-col font-sans">
+        <header className="bg-slate-800 p-4 flex items-center justify-between shadow-md border-b border-slate-700 z-20">
+          <div className="flex items-center gap-3">
+            <button onClick={disconnectRemote} className="p-2 bg-slate-700 rounded-full hover:bg-slate-600 transition-colors">
+              <X className="w-5 h-5 text-rose-400" />
+            </button>
+            <div>
+              <h2 className="font-bold text-emerald-400 flex items-center gap-2"><Smartphone className="w-4 h-4"/> Akses Remote</h2>
+              <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                {remoteStatus === 'connected' ? (
+                   <><span className="w-2 h-2 rounded-full bg-emerald-500"></span> Terhubung ke Host</>
+                ) : (
+                   <><span className="w-2 h-2 rounded-full bg-rose-500"></span> Terputus</>
+                )}
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {remoteStatus !== 'connected' ? (
+          <div className="flex-1 p-6 flex flex-col items-center justify-center">
+            <div className="max-w-xs w-full bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl">
+                <div className="w-16 h-16 bg-emerald-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-emerald-500/50">
+                    <Server className="w-8 h-8 text-emerald-400" />
+                </div>
+                <h3 className="text-xl font-bold text-center mb-6">Hubungkan ke Host</h3>
+                <input
+                    type="text"
+                    maxLength={6}
+                    value={remoteId}
+                    onChange={(e) => setRemoteId(e.target.value.toUpperCase())}
+                    className="w-full bg-slate-900 border-2 border-slate-700 text-white text-center text-3xl font-black tracking-[0.2em] py-4 rounded-xl focus:border-emerald-500 focus:outline-none transition-colors mb-6 uppercase"
+                    placeholder="------"
+                />
+                <Button3D color="emerald" className="w-full" onClick={connectToHost} disabled={remoteStatus === 'connecting'}>
+                    {remoteStatus === 'connecting' ? 'Menghubungkan...' : 'Jelajahi File'}
+                </Button3D>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col overflow-hidden bg-slate-950">
+             <div className="flex-1 overflow-y-auto p-2 no-scrollbar">
+                {remoteFiles.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-slate-500 text-sm">
+                        Folder kosong atau sedang dimuat...
+                    </div>
+                ) : (
+                    <div className="space-y-1">
+                        {remoteFiles.map((file, idx) => (
+                            <div key={idx} className="flex items-center justify-between bg-slate-900 hover:bg-slate-800 p-3 rounded-xl border border-slate-800/50 transition-colors group">
+                                <div className="flex items-center gap-3 overflow-hidden flex-1">
+                                    <File className="w-6 h-6 text-blue-400 flex-shrink-0" />
+                                    <div className="overflow-hidden">
+                                        <p className="text-sm font-medium text-slate-200 truncate pr-4">{file.name}</p>
+                                        <p className="text-[10px] text-slate-500 truncate">{file.path}</p>
+                                    </div>
+                                </div>
+                                
+                                <button 
+                                    onClick={() => requestFile(file.path)}
+                                    className="p-3 bg-slate-800 rounded-full text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all flex-shrink-0 border border-slate-700 active:scale-95"
+                                >
+                                    <DownloadCloud className="w-5 h-5" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+             </div>
+          </div>
+        )}
+        {toast && (
+          <div className="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl z-50 text-sm font-medium border border-slate-700">{toast}</div>
         )}
       </div>
     );
