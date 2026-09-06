@@ -2,6 +2,22 @@ import React, { useState, useEffect, useRef } from 'react';
 import { UploadCloud, DownloadCloud, Server, HardDrive, Smartphone, File, Folder as FolderIcon, X, CheckCircle, Zap, ArrowLeft } from 'lucide-react';
 import { Peer } from 'peerjs';
 
+// === SENJATA PENEMBUS JARAK JAUH (STUN SERVERS) ===
+// Ini yang akan menjebol firewall provider (NAT) agar bisa beda jaringan
+const peerConfig = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' }
+    ]
+  },
+  debug: 1
+};
+
 const Button3D = ({ children, onClick, color = 'blue', className = '', disabled = false }) => {
   const colorVariants = {
     blue: 'bg-blue-500 hover:bg-blue-400 border-blue-700 text-white shadow-blue-500/50',
@@ -39,17 +55,17 @@ export default function App() {
   const [myId, setMyId] = useState('');
   const [conn, setConn] = useState(null);
 
-  // === STATE HOST ===
+  // === STATE HOST (CLOUD) ===
   const [hostedFiles, setHostedFiles] = useState([]);
   const [hostStatus, setHostStatus] = useState('idle'); 
   const fileInputRef = useRef(null);
 
-  // === STATE REMOTE (CLIENT) ===
+  // === STATE REMOTE (CLIENT CLOUD) ===
   const [remoteId, setRemoteId] = useState('');
   const [remoteFiles, setRemoteFiles] = useState([]);
   const [remoteStatus, setRemoteStatus] = useState('disconnected');
 
-  // === STATE DIRECT TRANSFER ===
+  // === STATE DIRECT TRANSFER (KIRIM/TERIMA) ===
   const [sendStatus, setSendStatus] = useState('idle'); 
   const [sentFilesCount, setSentFilesCount] = useState(0);
   const [receiveStatus, setReceiveStatus] = useState('idle');
@@ -61,12 +77,16 @@ export default function App() {
     setTimeout(() => setToast(''), 3000);
   };
 
+  // Membersihkan koneksi saat pindah layar
   useEffect(() => {
     return () => {
       if (peer) peer.destroy();
     };
   }, [peer]);
 
+  // ==========================================
+  // FITUR 1: HOST FOLDER (CLOUD PRIBADI)
+  // ==========================================
   const startHosting = () => {
     setCurrentScreen('host');
     setHostStatus('idle');
@@ -79,7 +99,8 @@ export default function App() {
 
       if (peer) peer.destroy();
 
-      const newPeer = new Peer(Math.random().toString(36).substring(2, 8).toUpperCase());
+      // Gunakan Peer dengan STUN config
+      const newPeer = new Peer(Math.random().toString(36).substring(2, 8).toUpperCase(), peerConfig);
       
       newPeer.on('open', (id) => {
         setMyId(id);
@@ -105,11 +126,11 @@ export default function App() {
                const requestedFile = files.find(f => f.webkitRelativePath === data.path);
                if(requestedFile) {
                    const reader = new FileReader();
-                   reader.onload = (e) => {
+                   reader.onload = (event) => {
                        connection.send({ 
                            type: 'FILE_DATA', 
                            fileName: requestedFile.name, 
-                           fileData: e.target.result,
+                           fileData: event.target.result,
                            fileType: requestedFile.type
                        });
                    };
@@ -126,12 +147,17 @@ export default function App() {
     }
   };
 
+  // ==========================================
+  // FITUR 2: REMOTE AKSES (PENGAMBIL CLOUD)
+  // ==========================================
   const startRemoteAccess = () => setCurrentScreen('remote');
 
   const connectToHost = () => {
     if (!remoteId.trim()) return showToast("Masukkan ID Host!");
     setRemoteStatus('connecting');
-    const newPeer = new Peer();
+    
+    // Gunakan Peer dengan STUN config
+    const newPeer = new Peer(peerConfig);
     
     newPeer.on('open', () => {
       const connection = newPeer.connect(remoteId.toUpperCase());
@@ -168,6 +194,7 @@ export default function App() {
 
   const disconnectRemote = () => {
       if(conn) conn.close();
+      if(peer) peer.destroy();
       setRemoteStatus('disconnected');
       setRemoteFiles([]);
       setCurrentScreen('home');
@@ -183,13 +210,18 @@ export default function App() {
       showToast(`Selesai diunduh: ${filename}`);
   };
 
+  // ==========================================
+  // FITUR 3: KIRIM FILE LANGSUNG
+  // ==========================================
   const startSending = () => {
     setCurrentScreen('send');
     setSendStatus('idle');
     setSentFilesCount(0);
     if (peer) peer.destroy();
     
-    const newPeer = new Peer(Math.random().toString(36).substring(2, 8).toUpperCase());
+    // Gunakan Peer dengan STUN config
+    const newPeer = new Peer(Math.random().toString(36).substring(2, 8).toUpperCase(), peerConfig);
+    
     newPeer.on('open', (id) => {
       setMyId(id);
       setSendStatus('ready');
@@ -204,37 +236,48 @@ export default function App() {
   };
 
   const handleDirectFileSelect = (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0 || !conn) return;
+    try {
+      const files = Array.from(e.target.files);
+      if (files.length === 0 || !conn) return;
 
-    files.forEach(file => {
-       const reader = new FileReader();
-       reader.onload = (e) => {
-           conn.send({ 
-               type: 'DIRECT_FILE', 
-               fileName: file.name, 
-               fileData: e.target.result,
-               fileType: file.type
-           });
-           setSentFilesCount(prev => prev + 1);
-           showToast(`Terkirim: ${file.name}`);
-       };
-       reader.readAsArrayBuffer(file);
-    });
+      files.forEach(file => {
+         const reader = new FileReader();
+         reader.onload = (event) => {
+             conn.send({ 
+                 type: 'DIRECT_FILE', 
+                 fileName: file.name, 
+                 fileData: event.target.result,
+                 fileType: file.type
+             });
+             setSentFilesCount(prev => prev + 1);
+             showToast(`Terkirim: ${file.name}`);
+         };
+         reader.readAsArrayBuffer(file);
+      });
+    } catch (error) {
+       showToast("Gagal memproses file.");
+       console.error(error);
+    }
   };
 
+  // ==========================================
+  // FITUR 4: TERIMA FILE LANGSUNG
+  // ==========================================
   const startReceiving = () => {
     setCurrentScreen('receive');
     setReceiveStatus('idle');
     setRemoteId('');
     setReceivedFiles([]);
     if (conn) conn.close();
+    if (peer) peer.destroy();
   };
 
   const connectToSender = () => {
     if (!remoteId.trim()) return showToast("Masukkan PIN Pengirim!");
     setReceiveStatus('connecting');
-    const newPeer = new Peer();
+    
+    // Gunakan Peer dengan STUN config
+    const newPeer = new Peer(peerConfig);
     
     newPeer.on('open', () => {
       const connection = newPeer.connect(remoteId.toUpperCase());
@@ -261,6 +304,10 @@ export default function App() {
     });
   };
 
+
+  // ==========================================
+  // TAMPILAN UI
+  // ==========================================
   if (currentScreen === 'home') {
     return (
       <div className="bg-slate-900 text-slate-200 min-h-[100dvh] w-full flex justify-center items-center font-sans">
@@ -297,7 +344,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Cloud Privasi */}
+            {/* Cloud Pribadi */}
             <div className="bg-slate-800/60 backdrop-blur-md p-5 rounded-[2rem] border border-slate-700/50 shadow-lg">
               <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                 <Server className="w-4 h-4 text-amber-400" /> Cloud Pribadi
@@ -338,7 +385,7 @@ export default function App() {
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <h2 className="font-bold text-blue-400 flex items-center gap-2"><UploadCloud className="w-4 h-4"/> Kirim File Langsung</h2>
+            <h2 className="font-bold text-blue-400 flex items-center gap-2"><UploadCloud className="w-4 h-4"/> Kirim File</h2>
             <p className="text-xs text-slate-400">P2P File Transfer</p>
           </div>
         </header>
@@ -440,7 +487,7 @@ export default function App() {
                             </span>
                         </span>
                         <h3 className="text-lg font-bold text-white mb-1">Menunggu Kiriman...</h3>
-                        <p className="text-xs text-slate-400">File akan otomatis diunduh.</p>
+                        <p className="text-xs text-slate-400">File akan otomatis diunduh ke perangkat.</p>
                     </div>
 
                     {receivedFiles.length > 0 && (
@@ -491,7 +538,8 @@ export default function App() {
                     <input 
                         type="file" 
                         ref={fileInputRef}
-                        webkitdirectory="true" 
+                        webkitdirectory="" 
+                        directory="" 
                         className="hidden" 
                         onChange={handleFolderSelect}
                     />
